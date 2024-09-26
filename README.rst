@@ -56,9 +56,10 @@ The telescope mount must be capable of smoothly executing continuous floating-po
 
 + Celestron CPC (tested, *recommended*) & NexStar (tested)
 + iOptron AZMP with `latest firmware <https://www.ioptron.com/Articles.asp?ID=290>`_ (tested)
+  + Probably: HAZ31, HAZ46 (not tested)
 + Possibly others via ASCOM (*not* tested)
 + Planned:  Meade LX200 (*not* tested)
-+ **not compatible**:  Sky-Watcher (lacking support for rate commands)
++ Not testd:  Sky-Watcher
 
 **Cameras:**
 
@@ -148,6 +149,8 @@ only, and load the narrow field of view camera as the Coarse Camera.
 
 Getting Started
 ^^^^
+
+Install `ASI Camera SDK<http://zwoastro.com/software>` if using ZWO cameras.
 
 Check hardware compatiblity before proceeding.
 
