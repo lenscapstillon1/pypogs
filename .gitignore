@@ -7,13 +7,16 @@
 
 # Personal
 *my_*
-/my_&
+/my_*
 *My*
 
-# System data and debug
-/pypogs/data/*
-/pypogs/debug/*
+# System data and debug (exclude general txt but allow specific files)
+pypogs/data/*
+pypogs/debug/*
 *.txt
+!pypogs/_system_data/ASICamera2/ASICamera2_license.txt
+!pypogs/_system_data/ASICamera2/ASICamera2.dll
+!pypogs/_system_data/ASICamera2/ASICamera2.lib
 
 # Builds
 /build/*
@@ -24,10 +27,15 @@
 /setup.cfg
 
 # Exclude custom tetra3 databases (except default_database.npz)
-*.npz                  
-!default_database.npz
+*.npz
+!tetra3/default_database.npz
 
-#Exclude tetra3 source database files (tyc_main.dat, hip_main.dat)
-*.dat                  
+# Exclude tetra3 source database files (tyc_main.dat, hip_main.dat)
+*.dat
 *.pyc
-tetra3
+
+# Exclude tetra3 directory except necessary files
+tetra3/
+!tetra3/tetra3.py
+!tetra3/star_database.py
+!tetra3/default_database.npz

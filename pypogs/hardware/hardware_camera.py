@@ -1,31 +1,28 @@
-"""Camera hardware interface
+"""
+Camera hardware interface
 ============================
-
 Current hardware support:
     - :class:`pypogs.Camera`: 'ptgrey' for FLIR (formerly Point Grey) machine vision cameras. Requires Spinnaker API and PySpin, see the
       installation instructions. Tested with Blackfly S USB3 model BFS-U3-31S4M.
+    - :class:`pypogs.Camera`: 'ascom' for ASCOM-enabled cameras. Requires ASCOM platform, ASCOM drivers, and native drivers.
+      Tested with ZWO ASI cameras.
+    - :class:`pypogs.Camera`: 'zwoasi' for ZWO ASI cameras. Requires ZWO ASI SDK and zwoasi Python library.
+      Tested with ZWO ASI120MM Mini and ZWO ASI678MC.
 
-    - :class:`pypogs.Camera`: 'ascom' for ASCOM-enabled cameras.  Requires ASCOM platform, ASCOM drivers, and native drivers.
-      Tested with FIXME.
-      
-      
 This is Free and Open-Source Software originally written by Gustav Pettersson at ESA.
-
 License:
     Copyright 2019 the European Space Agency
-
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
     You may obtain a copy of the License at
-
         https://www.apache.org/licenses/LICENSE-2.0
-
     Unless required by applicable law or agreed to in writing, software
     distributed under the License is distributed on an "AS IS" BASIS,
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
     See the License for the specific language governing permissions and
     limitations under the License.
 """
+
 # Standard imports:
 from pathlib import Path
 import logging
@@ -34,59 +31,43 @@ from datetime import datetime
 from threading import Thread, Event
 from struct import pack as pack_data
 
-
 # External imports:
 import numpy as np
 import serial
 
 # Hardware support imports:
 import zwoasi
-
-_zwoasi_bayer = {0:'RGGB', 1:'BGGR', 2:'GRBG', 3:'GBRG'}                                                        
+_zwoasi_bayer = {0:'RGGB', 1:'BGGR', 2:'GRBG', 3:'GBRG'}
 
 class Camera:
     """Control acquisition and receive images from a camera.
-
     To initialise a Camera a *model* (determines hardware interface) and *identity* (identifying the specific device)
     must be given. If both are given to the constructor the Camera will be initialised immediately (unless
     auto_init=False is passed). Manually initialise with a call to Camera.initialize(); release hardware with a call to
     Camera.deinitialize().
-
     After the Camera is initialised, acquisition properties (e.g. exposure_time and frame_rate) may be set and images
     received. The Camera also supports event-driven acquisition, see Camera.add_event_callback(), where new images are
     automatically passed on to the desired functions.
-
     Args:
         model (str, optional): The model used to determine the correct hardware API. Supported: 'ptgrey' for
-            PointGrey/FLIR Machine Vision cameras (using Spinnaker and PySpin).
-        identity (str, optional): String identifying the device. For model *ptgrey* this is 'serial number' *as a
-            string*.
+            PointGrey/FLIR Machine Vision cameras (using Spinnaker and PySpin), 'zwoasi' for ZWO ASI cameras, 'ascom' for
+            ASCOM-enabled cameras.
+        identity (str, optional): String identifying the device. For model 'zwoasi', this is the camera index (e.g., '0' or '1').
         name (str, optional): Name for the device.
-        auto_init (bool, optional): If both model and identity are given when creating the Camera and auto_init
-            is True (the default), Camera.initialize() will be called after creation.
-        debug_folder (pathlib.Path, optional): The folder for debug logging. If None (the default)
-            the folder *pypogs*/debug will be used/created.
-
+        auto_init (bool, optional): If both model and identity are given and auto_init is True (default), Camera.initialize() will be called.
+        debug_folder (pathlib.Path, optional): The folder for debug logging. If None (default), the folder pypogs/debug will be used/created.
     Example:
         ::
-
-            # Create instance and set parameters (will auto initialise)
-            cam = pypogs.Camera(model='ptgrey', identity='18285284', name='CoarseCam')
-            cam.gain = 0 #decibel
-            cam.exposure_time = 100 #milliseconds
-            cam.frame_rate_auto = True
-            # Start acquisition
+            # Create instance and set parameters for ZWO ASI cameras
+            cam = pypogs.Camera(model='zwoasi', identity='0', name='CoarseCam')
+            cam.exposure_time = 100 # milliseconds
             cam.start()
-            # Wait for a while
             time.sleep(2)
-            # Read the latest image
             img = cam.get_latest_image()
-            # Stop the acquisition
             cam.stop()
-            # Release the hardware
             cam.deinitialize()
     """
-    _supported_models = ('ptgrey','zwoasi','ascom')
+    _supported_models = ('ptgrey', 'zwoasi', 'ascom')
     _default_model = 'zwoasi'
 
     def __init__(self, model=None, identity=None, name=None, auto_init=True, debug_folder=None, properties=[]):
@@ -103,7 +84,7 @@ class Camera:
             self._logger.setLevel(logging.DEBUG)
             # Console handler at INFO level
             ch = logging.StreamHandler()
-            ch.setLevel(logging.INFO)   #CHANGE MEEEEEEE
+            ch.setLevel(logging.INFO)
             # File handler at DEBUG level
             fh = logging.FileHandler(self.debug_folder / 'pypogs.txt')
             fh.setLevel(logging.DEBUG)
@@ -113,35 +94,38 @@ class Camera:
             ch.setFormatter(formatter)
             self._logger.addHandler(fh)
             self._logger.addHandler(ch)
-
         # Start of constructor
         self._logger.debug('Creating instance. Constructor input: Model:'+str(model)+' ID:'+str(identity)\
                            +' Name:'+str(name) +' AutoInit:'+str(auto_init))
+
+        # Default camera configuration for ZWO ASI120MM Mini (coarse, monochrome, 1280x960, 3.75 µm, 120 mm focal length)
+        # and ZWO ASI678MC (fine, color, 3840x2160, 2.0 µm, 135 mm focal length) using zwoasi library
         self._model = None
         self._identity = None
         self._name = 'UnnamedCamera'
         self._plate_scale = 1.0
         self._rotation = 0.0
-        self._binning = 1
+        self._binning = 1  # Full resolution for both cameras
         self._flipX = False
         self._flipY = False
-        self._rot90 = 0 #Number of times to rotate by 90 deg, done after flips
-        self._color_bin = True # Downscale when debayering instead of interpolating for speed
-        #Only used for ptgrey
+        self._rot90 = 0  # Number of times to rotate by 90 deg, done after flips
+        self._color_bin = False  # Disable color binning for ASI678MC full resolution (3840x2160)
+        # Only used for ptgrey
         self._ptgrey_camera = None
         self._ptgrey_camlist = None
         self._ptgrey_system = None
-        #Only used for zwoasi
+        # Only used for zwoasi
         self._zwoasi_camera_index = None
         self._zwoasi_camera = None
         self._zwoasi_is_init = False
         self._zwoasi_image_handler = None
         self._zwoasi_property = None
-        #Only used for ascom
+        # Only used for ascom
         self._ascom_driver_handler = None
         self._ascom_camera = None
         self._exposure_sec = 0.1
-        #Callbacks on image event
+
+        # Callbacks on image event
         self._call_on_image = set()
         self._got_image_event = Event()
         self._image_data = None
@@ -149,7 +133,6 @@ class Camera:
         self._imgs_since_start = 0
         self._average_frame_time = None  # Running average of time between frames in ms
         self._image_precision_timestamp = None  # Precision timestamp of last frame
-
         self._logger.debug('Calling self on constructor input')
         if model is not None:
             self.model = model
@@ -162,7 +145,7 @@ class Camera:
             self.initialize()
         else:
             self._logger.debug('Skipping auto-initialise')
-            
+
         available_properties = self.available_properties
         for property_name in properties:
             if property_name in available_properties:
@@ -171,13 +154,13 @@ class Camera:
                     setattr(self, property_name, properties[property_name])
                 except:
                     self._logger.warning('Failed to set camera property "%s" to value "%s"' % (property_name, properties[property_name]))
-            
+
         self._logger.debug('Registering destructor')
-        # TODO: Should we register deinitialisor instead? (probably yes...)
         import atexit, weakref
         atexit.register(weakref.ref(self.__del__))
         self._logger.info('Camera instance created with name: ' + self.name + '.')
 
+    # The rest of the file remains unchanged (all methods below __init__)
     def __del__(self):
         """Destructor. Releases hardware."""
         try:
@@ -340,7 +323,7 @@ class Camera:
                 self._ptgrey_camlist.Clear()
         elif self.model.lower() == 'zwoasi':
             self._log_debug('Using zwoasi, first load and initialise the package')
-            library_path = Path(__file__).parent.parent / '_system_data' / 'ASICamera2'
+            library_path = Path(__file__).parent.parent / '_system_data' / 'ASICamera2' / 'ASICamera2.dll'
             self._log_debug('Initialising with files at ' + str(library_path.resolve()))
             try:
                 zwoasi.init(str(library_path.resolve()))
